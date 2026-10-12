@@ -1,6 +1,7 @@
 package managedkafka_test
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -161,6 +162,92 @@ resource "google_managed_kafka_cluster" "example" {
   labels = {
     key = "new-value"
   }
+}
+
+data "google_project" "project" {
+}
+`, context)
+}
+
+// Exercises the two-step Kafka version upgrade: binaries first (binary_version),
+// then metadata finalization (kafka_version).
+func TestAccManagedKafkaCluster_kafkaVersionUpgrade(t *testing.T) {
+	t.Parallel()
+
+	context := map[string]interface{}{
+		"random_suffix": acctest.RandString(t, 10),
+	}
+
+	acctest.VcrTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.AccTestPreCheck(t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories(t),
+		CheckDestroy:             testAccCheckManagedKafkaClusterDestroyProducer(t),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccManagedKafkaCluster_withVersions(context, "3.7.x", "3.7.x"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_managed_kafka_cluster.example", "kafka_version", "3.7.x"),
+					resource.TestCheckResourceAttr("google_managed_kafka_cluster.example", "binary_version", "3.7.x"),
+				),
+			},
+			{
+				// Changing both fields in one apply must be rejected at plan time.
+				Config:      testAccManagedKafkaCluster_withVersions(context, "4.3.x", "4.3.x"),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile("cannot be changed in the same apply"),
+			},
+			{
+				// Step 1: upgrade binaries. Metadata version stays at 3.7.x.
+				Config: testAccManagedKafkaCluster_withVersions(context, "3.7.x", "4.3.x"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_managed_kafka_cluster.example", "kafka_version", "3.7.x"),
+					resource.TestCheckResourceAttr("google_managed_kafka_cluster.example", "binary_version", "4.3.x"),
+				),
+			},
+			{
+				ResourceName:            "google_managed_kafka_cluster.example",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"cluster_id", "labels", "location", "terraform_labels"},
+			},
+			{
+				// Step 2: finalize the metadata version.
+				Config: testAccManagedKafkaCluster_withVersions(context, "4.3.x", "4.3.x"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("google_managed_kafka_cluster.example", "kafka_version", "4.3.x"),
+					resource.TestCheckResourceAttr("google_managed_kafka_cluster.example", "binary_version", "4.3.x"),
+				),
+			},
+			{
+				ResourceName:            "google_managed_kafka_cluster.example",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"cluster_id", "labels", "location", "terraform_labels"},
+			},
+		},
+	})
+}
+
+func testAccManagedKafkaCluster_withVersions(context map[string]interface{}, kafkaVersion, binaryVersion string) string {
+	context["kafka_version"] = kafkaVersion
+	context["binary_version"] = binaryVersion
+	return acctest.Nprintf(`
+resource "google_managed_kafka_cluster" "example" {
+  cluster_id = "tf-test-my-cluster%{random_suffix}"
+  location = "us-central1"
+  capacity_config {
+    vcpu_count = 3
+    memory_bytes = 3221225472
+  }
+  gcp_config {
+    access_config {
+      network_configs {
+        subnet = "projects/${data.google_project.project.number}/regions/us-central1/subnetworks/default"
+      }
+    }
+  }
+  kafka_version  = "%{kafka_version}"
+  binary_version = "%{binary_version}"
 }
 
 data "google_project" "project" {

@@ -37,7 +37,10 @@ async:
     base_url: '{{op_id}}'
   result:
     resource_inside_response: true
+custom_diff:
+  - 'managedKafkaClusterVersionCustomizeDiff'
 custom_code:
+  constants: 'templates/terraform/constants/managed_kafka_cluster.go.tmpl'
 samples:
   - name: 'managedkafka_cluster_basic'
     primary_resource_id: 'example'
@@ -202,7 +205,21 @@ properties:
     description: |-
       The Apache Kafka version of the cluster. Specifically, this value is the finalized metadata version.
       If not specified during cluster creation, defaults to `3.7.x`.
+
+      Raising this value finalizes a Kafka version upgrade and cannot be undone. It must be less than or
+      equal to `binary_version`, and must not be changed in the same apply as `binary_version`.
       If you manage Kafka versions outside of Terraform, leave this field unset to avoid a permanent diff.
+  - name: 'binaryVersion'
+    type: String
+    default_from_api: true
+    description: |-
+      The version of the cluster's broker and controller binaries. This field is used for Kafka version upgrades.
+
+      Kafka requires two-step upgrades: first, broker/controller binaries are upgraded with the `binary_version`
+      field (reversible). Then, the metadata version is finalized by raising the `kafka_version` field (irreversible).
+      The binary version must be greater than or equal to `kafka_version`, and must not be changed in the same
+      apply as `kafka_version`. Changing this value triggers a rolling restart of the brokers and controllers.
+      If not specified during cluster creation, defaults to the cluster's `kafka_version`.
   - name: 'tlsConfig'
     type: NestedObject
     default_from_api: true
